@@ -94,81 +94,188 @@ st.markdown("""
 # ─── Synthetic Data Generator ────────────────────────────────────────────────
 @st.cache_data
 def generate_synthetic_data(n_samples=157, seed=42):
-    """Generate synthetic petrographic + petrophysical data mimicking
-    Rotliegendes & Buntsandstein reservoir samples from the paper."""
+    """Generate synthetic petrographic + petrophysical data with geologically-
+    informed feature→target relationships derived from the paper's SHAP analysis.
+
+    KEY DESIGN: Features are generated FIRST (independently per well), then
+    porosity is COMPUTED as a nonlinear function of those features + noise.
+    This ensures the RF model learns meaningful multi-feature importance
+    patterns rather than trivially latching onto a single derived feature.
+
+    Geological controls encoded (per SHAP Figs. 3 & 6):
+      Porosity (+): intergranular porosity, TiOx, pore-filling illite,
+                    MRF undiff, K-feldspar cement, IG por K-fsp, moderate GTG
+      Porosity (−): calcite cement, quartz cement, GTI > 40% (tangential),
+                    pore-lining illite > 3%, quartz > 55%, high GTG, ductile RF
+      Permeability (+): porosity, GTI coating, grain size
+      Permeability (−): GTG coating, pore-filling illite, pore-lining illite,
+                        ductile RF, K-feldspar cement
+    """
     rng = np.random.RandomState(seed)
 
-    wells = []
-    regions = []
-    strat_groups = []
-
     well_configs = {
-        "Well A+B (Buntsandstein)": {"n": 34, "region": "W-URG", "strat": "Buntsandstein",
-            "por_range": (7, 20), "perm_range": (0.02, 196), "gti_range": (15, 55),
-            "tiox_range": (0, 0.5), "calcite_range": (0, 0.3)},
-        "Well C (Buntsandstein)": {"n": 34, "region": "E-URG", "strat": "Buntsandstein",
-            "por_range": (0, 4), "perm_range": None, "gti_range": (25, 70),
-            "tiox_range": (0, 0.3), "calcite_range": (0, 0.5)},
-        "Well D (Buntsandstein)": {"n": 40, "region": "E-Shoulder URG", "strat": "Buntsandstein",
-            "por_range": (2, 16), "perm_range": (0.0001, 7.76), "gti_range": (40, 90),
-            "tiox_range": (0.2, 3.5), "calcite_range": (0, 0.2)},
-        "Well A+B (Rotliegendes)": {"n": 49, "region": "S. Permian Basin", "strat": "Rotliegendes",
-            "por_range": (0.6, 14.5), "perm_range": (0.009, 780), "gti_range": (45, 95),
-            "tiox_range": (0, 0.1), "calcite_range": (0.5, 8)},
+        "Well A+B (Buntsandstein)": {
+            "n": 34, "region": "W-URG", "strat": "Buntsandstein",
+            "perm_range": (0.02, 196),
+            "gti_range": (15, 55), "tiox_range": (0, 0.5),
+            "calcite_range": (0, 0.3), "qtz_cem_range": (2, 12),
+            "por_baseline": 14.0,   # high porosity well
+        },
+        "Well C (Buntsandstein)": {
+            "n": 34, "region": "E-URG", "strat": "Buntsandstein",
+            "perm_range": None,
+            "gti_range": (25, 70), "tiox_range": (0, 0.3),
+            "calcite_range": (0, 0.5), "qtz_cem_range": (8, 22),
+            "por_baseline": 2.0,    # tight well — heavy cementation
+        },
+        "Well D (Buntsandstein)": {
+            "n": 40, "region": "E-Shoulder URG", "strat": "Buntsandstein",
+            "perm_range": (0.0001, 7.76),
+            "gti_range": (40, 90), "tiox_range": (0.2, 3.5),
+            "calcite_range": (0, 0.2), "qtz_cem_range": (4, 16),
+            "por_baseline": 8.0,
+        },
+        "Well A+B (Rotliegendes)": {
+            "n": 49, "region": "S. Permian Basin", "strat": "Rotliegendes",
+            "perm_range": (0.009, 780),
+            "gti_range": (45, 95), "tiox_range": (0, 0.1),
+            "calcite_range": (0.5, 8), "qtz_cem_range": (1, 14),
+            "por_baseline": 7.0,
+        },
     }
 
     records = []
     for well_name, cfg in well_configs.items():
         n = cfg["n"]
-        por_lo, por_hi = cfg["por_range"]
-        porosity = rng.uniform(por_lo, por_hi, n)
 
-        # Intergranular porosity (correlated with plug porosity, slightly lower)
-        intergranular_por = porosity * rng.uniform(0.55, 0.85, n)
-
-        # Permeability (log-normal, correlated with porosity)
-        if cfg["perm_range"] is not None:
-            log_perm = -2 + 0.25 * porosity + rng.normal(0, 0.6, n)
-            perm = np.clip(10**log_perm, cfg["perm_range"][0], cfg["perm_range"][1])
-        else:
-            perm = np.full(n, np.nan)
-
-        # Petrographic features
+        # ── 1. Generate independent petrographic features ──────────────
         quartz = rng.uniform(38, 72, n)
         k_feldspar = rng.uniform(2, 18, n)
         plagioclase = rng.uniform(0, 5, n)
         mrf_undiff = rng.uniform(0, 10, n)
         ductile_rf = rng.uniform(0, 12, n)
 
-        # Coating coverages
         gti_lo, gti_hi = cfg["gti_range"]
         gti_coverage = rng.uniform(gti_lo, gti_hi, n)
         gtg_coverage = gti_coverage * rng.uniform(0.5, 1.1, n)
         gtg_coverage = np.clip(gtg_coverage, 0, 100)
 
-        # Authigenic phases
         tiox_lo, tiox_hi = cfg["tiox_range"]
         auth_tiox = rng.uniform(tiox_lo, tiox_hi, n)
         calc_lo, calc_hi = cfg["calcite_range"]
         calcite_cement = rng.uniform(calc_lo, calc_hi, n)
-        quartz_cement = rng.uniform(0, 20, n)
+        qtz_lo, qtz_hi = cfg["qtz_cem_range"]
+        quartz_cement = rng.uniform(qtz_lo, qtz_hi, n)
         kfsp_cement = rng.uniform(0, 5, n)
 
-        # Illite types
-        pf_illite = rng.uniform(0, 12, n)   # pore-filling (radial/meshwork)
-        pl_illite = rng.uniform(0, 12, n)   # pore-lining (tangential)
+        pf_illite = rng.uniform(0, 12, n)
+        pl_illite = rng.uniform(0, 12, n)
         dolomite = rng.uniform(0, 8, n)
-
-        # Intragranular porosity in K-feldspar
         ig_por_kfsp = rng.uniform(0, 3.5, n)
-
-        # Grain size (mm)
         grain_size = rng.uniform(0.1, 0.85, n)
 
-        # Optical porosity (slightly noisy version of intergranular)
-        optical_por = intergranular_por + rng.normal(0, 0.4, n)
+        # ── 2. Compute porosity from features (geologically-informed) ──
+        # Start with well-specific baseline, then modulate by features
+        porosity = np.full(n, cfg["por_baseline"])
+
+        # (+) Pore-filling illite inhibits quartz cementation → preserves φ
+        porosity += 0.35 * pf_illite
+
+        # (+) TiOx authigenesis → K-fsp dissolution → secondary porosity
+        porosity += 1.5 * auth_tiox
+
+        # (+) MRF undiff (meta-siltstones) preserve framework
+        porosity += 0.22 * mrf_undiff
+
+        # (+) Intragranular porosity in K-feldspar
+        porosity += 0.8 * ig_por_kfsp
+
+        # (+) K-feldspar cement stabilises framework
+        porosity += 0.20 * kfsp_cement
+
+        # (−) Calcite cement occludes pore space
+        porosity -= 0.6 * calcite_cement
+
+        # (−) Quartz cement reduces porosity
+        porosity -= 0.4 * quartz_cement
+
+        # (−) Pore-lining illite > 3% enhances chemical compaction
+        porosity -= 0.20 * np.maximum(pl_illite - 3, 0)
+
+        # (−) Ductile RF enhances mechanical compaction
+        porosity -= 0.18 * ductile_rf
+
+        # (−) Quartz grains > 55% → more quartz overgrowth surface area
+        porosity -= 0.12 * np.maximum(quartz - 55, 0)
+
+        # (±) GTI coating: below 40% preserves φ, above 40% tangential
+        #     coatings enhance chemical compaction (reduces φ)
+        gti_effect = np.where(gti_coverage < 40,
+                              0.06 * (40 - gti_coverage),
+                              -0.04 * (gti_coverage - 40))
+        porosity += gti_effect
+
+        # (±) GTG coating: moderate (30-60%) preserves, >75% compaction
+        gtg_effect = np.where(gtg_coverage < 60,
+                              0.025 * np.minimum(gtg_coverage, 60),
+                              -0.05 * (gtg_coverage - 60))
+        porosity += gtg_effect
+
+        # (−) Dolomite cement (minor pore-filler)
+        porosity -= 0.10 * dolomite
+
+        # Grain size: minor effect on porosity
+        porosity += 1.0 * grain_size
+
+        # K-feldspar detrital: slight positive (dissolution potential)
+        porosity += 0.06 * k_feldspar
+
+        # Add realistic noise
+        porosity += rng.normal(0, 1.2, n)
+
+        # Clip to geologically reasonable range
+        porosity = np.clip(porosity, 0.02, 22.0)
+
+        # ── 3. Compute intergranular & optical porosity INDEPENDENTLY ──
+        # In real studies, intergranular porosity is measured optically via
+        # point-counting — it captures macroporosity but UNDERESTIMATES
+        # microporosity (Hurst & Nadeau, 1995). We model it using DIFFERENT
+        # weights, FEWER features, and SUBSTANTIAL noise so it carries some
+        # partial information but cannot dominate RF importance.
+        ig_base = cfg["por_baseline"] * 0.35
+        intergranular_por = (
+            ig_base
+            + 0.08 * pf_illite
+            + 0.5 * auth_tiox
+            - 0.15 * quartz_cement
+            - 0.20 * calcite_cement
+            + rng.normal(0, 2.2, n)     # high noise — optical counting variance
+        )
+        intergranular_por = np.clip(intergranular_por, 0, 14)
+
+        # Optical porosity ≈ intergranular por + measurement noise
+        optical_por = intergranular_por * rng.uniform(0.75, 1.05, n) + rng.normal(0, 0.8, n)
         optical_por = np.clip(optical_por, 0, None)
 
+        # ── 4. Compute permeability from features ─────────────────────
+        if cfg["perm_range"] is not None:
+            log_perm = (
+                -3.0
+                + 0.20 * porosity          # strong positive
+                + 0.008 * gti_coverage      # positive (inhibits Qtz cement)
+                + 1.5 * grain_size          # larger grains → larger throats
+                - 0.04 * gtg_coverage       # chemical compaction
+                - 0.06 * pf_illite          # reduces pore throat radii
+                - 0.05 * pl_illite          # tangential → compaction
+                - 0.04 * ductile_rf         # mechanical compaction
+                - 0.06 * kfsp_cement        # pore-filling
+                + rng.normal(0, 0.45, n)    # noise
+            )
+            perm = np.clip(10**log_perm, cfg["perm_range"][0], cfg["perm_range"][1])
+        else:
+            perm = np.full(n, np.nan)
+
+        # ── 5. Assemble records ────────────────────────────────────────
         for i in range(n):
             records.append({
                 "Well": well_name,
@@ -501,6 +608,18 @@ elif page == "SHAP Explainability":
                               coloraxis_colorbar_title="Intergranular<br>Porosity (%)")
         st.plotly_chart(fig_dep, use_container_width=True)
 
+        st.markdown("---")
+        st.info(
+            "**Geological Insight — Porosity Controls:**  \n"
+            "Positive SHAP values for intergranular porosity, authigenic TiOx (K-feldspar dissolution), "
+            "and pore-filling (radial) illite align with porosity *preservation* mechanisms — radial illite "
+            "inhibits syntaxial quartz cementation, while TiOx authigenesis reflects secondary porosity from "
+            "feldspar leaching. Negative SHAP values for calcite cement, high GTG coatings (>75%), quartz "
+            "cement, and tangential (pore-lining) illite reflect porosity-*destructive* diagenetic processes: "
+            "pore-filling cementation and enhanced chemical compaction (pressure dissolution) at clay-coated "
+            "grain contacts (Heald, 1955; Kristiansen et al., 2011)."
+        )
+
     with tab_perm:
         st.markdown('<div class="section-header">SHAP Summary — Permeability Model</div>', unsafe_allow_html=True)
         perm_features = models["perm_features"]
@@ -534,15 +653,19 @@ elif page == "SHAP Explainability":
                                 coloraxis_colorbar_title="Porosity<br>(scaled)")
         st.plotly_chart(fig_dep_k, use_container_width=True)
 
-    st.markdown("---")
-    st.info(
-        "**Geological Insight from SHAP:** Positive SHAP values for intergranular porosity, "
-        "authigenic TiOx, and pore-filling (radial) illite align with porosity preservation mechanisms. "
-        "Negative SHAP values for calcite cement, high GTG coatings, and tangential illite reflect "
-        "porosity-destructive diagenetic processes (cementation, chemical compaction). "
-        "These ML-derived insights confirm established reservoir quality controls and may reveal "
-        "previously unrecognised relationships in new datasets."
-    )
+        st.markdown("---")
+        st.info(
+            "**Geological Insight — Permeability Controls:**  \n"
+            "Porosity is the strongest positive driver of permeability, as expected from fundamental "
+            "pore-network relationships. Grain size shows a positive influence — larger grains preserve "
+            "larger pore throat diameters. GTI coating coverage is generally positive (inhibiting quartz "
+            "cementation preserves connected pore space). Critically, **pore-filling (radial) illite is "
+            "negative for permeability** despite being positive for porosity: while radial illite preserves "
+            "macropore volume by inhibiting quartz overgrowths, it simultaneously reduces effective pore "
+            "throat radii, impeding fluid flow (Neasham, 1977). GTG coatings and tangential illite are "
+            "negative — both enhance chemical compaction. Ductile rock fragments reduce permeability "
+            "through mechanical compaction of the intergranular volume (Paxton et al., 2002)."
+        )
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PAGE 5 — Single-Sample Predictor
@@ -594,31 +717,71 @@ elif page == "Single-Sample Predictor":
     c1, c2, c3 = st.columns(3)
     c1.markdown(f'<div class="metric-card"><div class="value">{pred_por:.1f}%</div>'
                 f'<div class="label">Predicted Porosity</div></div>', unsafe_allow_html=True)
-    c2.markdown(f'<div class="metric-card"><div class="value">{pred_perm_real:.2f} mD</div>'
+    c2.markdown(f'<div class="metric-card"><div class="value">{pred_perm_real:.2g} mD</div>'
                 f'<div class="label">Predicted Permeability</div></div>', unsafe_allow_html=True)
-    c3.markdown(f'<div class="metric-card"><div class="value">{pred_perm_log:.2f}</div>'
-                f'<div class="label">log₁₀ Permeability</div></div>', unsafe_allow_html=True)
+    # Reservoir quality classification
+    if pred_perm_real >= 100:
+        rq_label, rq_color = "Good–Excellent", "#27ae60"
+    elif pred_perm_real >= 10:
+        rq_label, rq_color = "Moderate", "#f5a623"
+    elif pred_perm_real >= 1:
+        rq_label, rq_color = "Poor–Fair", "#e67e22"
+    elif pred_perm_real >= 0.1:
+        rq_label, rq_color = "Tight", "#e74c3c"
+    else:
+        rq_label, rq_color = "Very Tight", "#c0392b"
+    c3.markdown(f'<div class="metric-card"><div class="value" style="color:{rq_color}">{rq_label}</div>'
+                f'<div class="label">Reservoir Quality</div></div>', unsafe_allow_html=True)
 
     # Gauge-style visualisation
     fig_gauge = make_subplots(rows=1, cols=2, specs=[[{"type": "indicator"}, {"type": "indicator"}]])
+
+    # Porosity gauge with quality bands
     fig_gauge.add_trace(go.Indicator(
         mode="gauge+number", value=pred_por,
-        title={"text": "Porosity (%)"},
+        number=dict(suffix="%"),
+        title={"text": "Porosity"},
         gauge=dict(axis=dict(range=[0, 22]),
                    bar=dict(color="#f5a623"),
-                   steps=[dict(range=[0, 5], color="#fee"), dict(range=[5, 12], color="#ffd"),
+                   steps=[dict(range=[0, 5], color="#fee"),
+                          dict(range=[5, 12], color="#ffd"),
                           dict(range=[12, 22], color="#dfd")]),
     ), row=1, col=1)
+
+    # Permeability gauge — REAL-SCALE on log axis
+    # Map log₁₀(mD) to gauge position, but label with real mD values
+    # Gauge range: -5 to 3 = 0.00001 to 1000 mD
     fig_gauge.add_trace(go.Indicator(
         mode="gauge+number", value=pred_perm_log,
-        title={"text": "log₁₀ Perm (mD)"},
-        gauge=dict(axis=dict(range=[-5, 3]),
-                   bar=dict(color="#3498db"),
-                   steps=[dict(range=[-5, -1], color="#eef"), dict(range=[-1, 1], color="#ddf"),
-                          dict(range=[1, 3], color="#ccf")]),
+        number=dict(valueformat=".2f", suffix=" log₁₀ mD"),
+        title={"text": f"Permeability ({pred_perm_real:.2g} mD)"},
+        gauge=dict(
+            axis=dict(
+                range=[-5, 3],
+                tickvals=[-4, -3, -2, -1, 0, 1, 2, 3],
+                ticktext=["0.0001", "0.001", "0.01", "0.1", "1", "10", "100", "1000"],
+            ),
+            bar=dict(color="#3498db"),
+            steps=[
+                dict(range=[-5, -1], color="#fadbd8"),   # tight/very tight
+                dict(range=[-1, 0], color="#fdebd0"),     # poor–fair
+                dict(range=[0, 1], color="#fef9e7"),       # moderate
+                dict(range=[1, 3], color="#d5f5e3"),       # good–excellent
+            ],
+            threshold=dict(line=dict(color="#e74c3c", width=2), thickness=0.75, value=0),
+        ),
     ), row=1, col=2)
-    fig_gauge.update_layout(height=280, margin=dict(t=60, b=20))
+
+    fig_gauge.update_layout(height=300, margin=dict(t=70, b=20))
     st.plotly_chart(fig_gauge, use_container_width=True)
+
+    st.caption(
+        "**Reading the permeability gauge:** The axis shows real millidarcy values on a logarithmic "
+        "scale. Negative log₁₀ values (left of the red threshold line at 1 mD) indicate sub-millidarcy "
+        "permeability — common in tight sandstones. The paper's dataset spans 0.0001–780 mD "
+        "(log₁₀ range: −4 to +2.9). Colour bands: "
+        "🔴 Tight (<0.1 mD) · 🟠 Poor–Fair (0.1–1 mD) · 🟡 Moderate (1–10 mD) · 🟢 Good–Excellent (>10 mD)."
+    )
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PAGE 6 — Business Case
