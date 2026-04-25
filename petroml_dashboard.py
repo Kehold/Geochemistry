@@ -407,7 +407,8 @@ with st.sidebar:
     page = st.radio(
         "Section",
         ["Overview & Data", "Porosity Model (RF)", "Permeability Model (SVR)",
-         "SHAP Explainability", "Single-Sample Predictor", "Business Case"],
+         "SHAP Explainability", "Single-Sample Predictor",
+         "Cuttings & Geochemistry", "Business Case"],
         label_visibility="collapsed",
     )
     st.markdown("---")
@@ -784,7 +785,234 @@ elif page == "Single-Sample Predictor":
     )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PAGE 6 — Business Case
+# PAGE 6 — Cuttings & Geochemistry
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "Cuttings & Geochemistry":
+    st.markdown("""
+    <div class="hero-banner">
+        <h1>Cuttings Workflow & Geochemical Integration</h1>
+        <p>
+            Extending ML-driven reservoir quality prediction from core to cuttings,
+            with geochemical data augmentation (XRF, pXRF, EDX, XRD) for enhanced
+            feature coverage and lower-cost subsurface characterisation.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Section 1: Why Cuttings? ──────────────────────────────────────────
+    st.markdown('<div class="section-header">Why Cuttings Matter</div>', unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns(3)
+    c1.markdown('<div class="metric-card"><div class="value">3–10 ft</div>'
+                '<div class="label">Sampling Interval</div></div>', unsafe_allow_html=True)
+    c2.markdown('<div class="metric-card"><div class="value">~100%</div>'
+                '<div class="label">Well Section Coverage</div></div>', unsafe_allow_html=True)
+    c3.markdown('<div class="metric-card"><div class="value">~$0</div>'
+                '<div class="label">Marginal Collection Cost</div></div>', unsafe_allow_html=True)
+
+    st.markdown("""
+    Drill cuttings are rock fragments produced during drilling that are carried to surface by the
+    mud system. Unlike cores — which are expensive, spatially discontinuous, and sometimes lost — cuttings
+    are **continuously available** for every drilled interval at effectively zero marginal collection cost.
+    Thin sections can be prepared from cuttings of suitable quality, and point-counting analyses applied
+    while skipping the area outside individual fragments (Ölmez et al., 2025).
+    """)
+
+    # ── Section 2: Data Continuity Comparison ─────────────────────────────
+    st.markdown('<div class="section-header">Data Continuity: Core vs. Cuttings vs. Logs</div>', unsafe_allow_html=True)
+
+    # Build a visual comparison of data availability along a wellbore
+    depth = np.arange(1000, 3500, 10)
+    # Core: sparse intervals
+    core_avail = np.zeros_like(depth, dtype=float)
+    for start, end in [(1200, 1260), (1800, 1830), (2400, 2500), (2900, 2940)]:
+        core_avail[(depth >= start) & (depth <= end)] = 1.0
+    # Cuttings: nearly continuous (small gaps for tripping, casing)
+    cuttings_avail = np.ones_like(depth, dtype=float)
+    for start, end in [(1500, 1520), (2200, 2230)]:  # casing points
+        cuttings_avail[(depth >= start) & (depth <= end)] = 0.0
+    # Logs: continuous below surface casing
+    log_avail = np.where(depth >= 1050, 1.0, 0.0)
+
+    fig_cont = go.Figure()
+    fig_cont.add_trace(go.Scatter(
+        x=log_avail * 3, y=depth, fill="tozerox", name="Wireline Logs",
+        line=dict(color="#3498db", width=0), fillcolor="rgba(52,152,219,0.3)",
+    ))
+    fig_cont.add_trace(go.Scatter(
+        x=cuttings_avail * 2, y=depth, fill="tozerox", name="Cuttings + Petro + Geochem",
+        line=dict(color="#27ae60", width=0), fillcolor="rgba(39,174,96,0.4)",
+    ))
+    fig_cont.add_trace(go.Scatter(
+        x=core_avail * 1, y=depth, fill="tozerox", name="Core (RCAL + Petrography)",
+        line=dict(color="#e74c3c", width=0), fillcolor="rgba(231,76,60,0.5)",
+    ))
+    fig_cont.update_layout(
+        yaxis=dict(title="Depth (m TVD)", autorange="reversed"),
+        xaxis=dict(title="", showticklabels=False, range=[0, 3.5]),
+        template="plotly_white", height=450, margin=dict(t=30),
+        legend=dict(orientation="h", y=1.06, x=0.5, xanchor="center"),
+    )
+    st.plotly_chart(fig_cont, use_container_width=True)
+
+    st.caption(
+        "Schematic data availability along a well section. Cores provide high-quality RCAL + "
+        "petrography but cover <15% of drilled intervals. Cuttings provide near-continuous "
+        "coverage for both petrographic point-counting and geochemical analysis (XRF/pXRF, EDX, XRD). "
+        "Wireline logs are continuous but cannot distinguish diagenetic mineral textures."
+    )
+
+    # ── Section 3: Cuttings → ML Pipeline ─────────────────────────────────
+    st.markdown('<div class="section-header">Cuttings-to-Prediction Workflow</div>', unsafe_allow_html=True)
+
+    steps = [
+        ("1. Collect", "Cuttings recovered at shale shaker, washed, dried, and catalogued at 3–10 ft intervals during drilling."),
+        ("2. Thin Section", "Petrographic thin sections prepared from selected cuttings fragments. Areas outside individual rock chips are excluded during point-counting (Ölmez et al., 2025)."),
+        ("3. Point Count", "Standardised 300-point counts: detrital phases, authigenic cements, porosity types, GTI/GTG coating coverages, grain size."),
+        ("4. Geochemistry", "Complementary pXRF or EDX analysis on the same cuttings for elemental composition (Si, Al, K, Ca, Fe, Ti, Mn). XRD for bulk mineralogy. These augment point-count features."),
+        ("5. Porosity (φ)", "Direct φ measurement on cuttings via Archimedes' principle, mercury injection, μCT, or NMR (Hübner, 2014; Kesserwan et al., 2017; Chang et al., 2020)."),
+        ("6. ML Inference", "Feed point-count data + measured φ + geochemistry into trained RF/SVR models to predict plug-equivalent porosity and permeability for uncored intervals."),
+    ]
+    for i in range(0, len(steps), 2):
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown(f'<div class="biz-card"><h4>{steps[i][0]}</h4><p>{steps[i][1]}</p></div>', unsafe_allow_html=True)
+        with c2:
+            if i + 1 < len(steps):
+                st.markdown(f'<div class="biz-card"><h4>{steps[i+1][0]}</h4><p>{steps[i+1][1]}</p></div>', unsafe_allow_html=True)
+
+    # ── Section 4: Geochemical Feature Augmentation ───────────────────────
+    st.markdown('<div class="section-header">Geochemical Data Augmentation</div>', unsafe_allow_html=True)
+
+    st.markdown("""
+    The paper highlights that geochemical datasets — XRF, portable XRF (pXRF), micro-XRF (μXRF),
+    EDX, and XRD — can be "easily integrated and utilised to maximise the knowledge gain from
+    subsurface samples." These methods provide complementary information to point-counting:
+    """)
+
+    geochem_data = pd.DataFrame({
+        "Method": ["pXRF", "μXRF / EDX", "XRD", "NMR (cuttings)", "μCT (cuttings)"],
+        "Measures": [
+            "Bulk elemental composition (Si, Al, K, Ca, Fe, Ti, Mn, Sr, Ba, Zr)",
+            "Spatially-resolved element maps on thin sections; mineral-specific chemistry",
+            "Bulk mineralogy with quantitative phase fractions (Rietveld refinement)",
+            "Pore size distribution, porosity, bound vs. free fluid",
+            "3D pore network connectivity, porosity, pore throat size distribution",
+        ],
+        "ML Feature Value": [
+            "Ti/Al, K/Al, Ca/Si ratios as provenance & diagenesis proxies; replaces subjective mineral ID",
+            "Maps grain coating composition at GTI/GTG contacts; validates point-count illite textures",
+            "Quantitative clay mineral fractions (illite, chlorite, kaolinite); independent of operator bias",
+            "Direct φ from cuttings; pore size as permeability predictor independent of point-counting",
+            "Pore connectivity metrics that correlate with permeability; supplements grain size data",
+        ],
+        "Cost/Sample": ["$15–40", "$50–150", "$30–80", "$100–300", "$200–500"],
+    })
+
+    st.dataframe(geochem_data, use_container_width=True, hide_index=True)
+
+    st.markdown("""
+    The key insight is that geochemical methods provide **objective, operator-independent**
+    measurements that can be combined with point-counting data to overcome the operator bias
+    limitation identified in the paper. A pXRF-derived Ti/Al ratio, for example, provides the
+    same provenance-related information as manually counted authigenic TiOx but without
+    inter-operator variability. Similarly, XRD-derived illite content can validate or replace
+    subjective identification of pore-filling vs. pore-lining illite textures.
+    """)
+
+    # ── Section 5: Extended Feature Matrix ────────────────────────────────
+    st.markdown('<div class="section-header">Extended Feature Matrix: Point-Count + Geochemistry</div>', unsafe_allow_html=True)
+
+    fig_matrix = go.Figure()
+    categories = ["Detrital\nMineralogy", "Authigenic\nCements", "Porosity\nTypes",
+                   "Coating\nCoverage", "Clay\nTexture", "Grain\nSize",
+                   "Elemental\nGeochem", "Bulk\nMineralogy", "Pore\nNetwork"]
+    # Point-counting coverage (0-1)
+    pc_coverage = [0.9, 0.85, 0.7, 0.95, 0.8, 0.9, 0.0, 0.0, 0.0]
+    # Geochemistry coverage
+    gc_coverage = [0.6, 0.7, 0.3, 0.1, 0.4, 0.0, 0.95, 0.95, 0.85]
+
+    fig_matrix.add_trace(go.Bar(
+        name="Point-Counting", x=categories, y=pc_coverage,
+        marker_color="#f5a623", text=[f"{v:.0%}" for v in pc_coverage],
+        textposition="auto",
+    ))
+    fig_matrix.add_trace(go.Bar(
+        name="Geochemistry (XRF + XRD + μCT)", x=categories, y=gc_coverage,
+        marker_color="#3498db", text=[f"{v:.0%}" for v in gc_coverage],
+        textposition="auto",
+    ))
+    fig_matrix.update_layout(
+        barmode="group", template="plotly_white", height=380,
+        yaxis_title="Feature Coverage Strength",
+        legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"),
+        margin=dict(t=40),
+    )
+    st.plotly_chart(fig_matrix, use_container_width=True)
+
+    st.caption(
+        "Point-counting excels at coating coverage, detrital mineralogy, and grain size — features "
+        "that geochemistry cannot easily replicate. Geochemistry fills the gaps in elemental composition, "
+        "quantitative bulk mineralogy, and 3D pore network characterisation. The combination produces a "
+        "richer, more objective feature set than either method alone."
+    )
+
+    # ── Section 6: Cost Comparison ────────────────────────────────────────
+    st.markdown('<div class="section-header">Per-Well Cost & Coverage: Core vs. Cuttings Approaches</div>', unsafe_allow_html=True)
+
+    cost_df = pd.DataFrame({
+        "Approach": [
+            "Full Core\n+ RCAL",
+            "Partial Core\n+ Cuttings Petro",
+            "Cuttings Petro\n+ pXRF/XRD",
+            "Cuttings Petro\n+ pXRF + μCT"
+        ],
+        "Coring ($K)": [150, 60, 0, 0],
+        "RCAL ($K)": [80, 35, 0, 0],
+        "Thin Sections ($K)": [8, 5, 12, 12],
+        "Geochemistry ($K)": [0, 0, 8, 25],
+        "ML Platform ($K)": [0, 20, 20, 25],
+    })
+    cost_df["Total ($K)"] = cost_df[["Coring ($K)", "RCAL ($K)", "Thin Sections ($K)",
+                                      "Geochemistry ($K)", "ML Platform ($K)"]].sum(axis=1)
+
+    fig_cost2 = go.Figure()
+    colours = {"Coring ($K)": "#e74c3c", "RCAL ($K)": "#e67e22",
+               "Thin Sections ($K)": "#f5a623", "Geochemistry ($K)": "#3498db",
+               "ML Platform ($K)": "#27ae60"}
+    for col, clr in colours.items():
+        fig_cost2.add_trace(go.Bar(name=col.replace(" ($K)", ""),
+                                    x=cost_df["Approach"], y=cost_df[col],
+                                    marker_color=clr))
+    fig_cost2.update_layout(
+        barmode="stack", template="plotly_white", height=400,
+        yaxis_title="Estimated Cost per Well ($K)",
+        legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center"),
+        margin=dict(t=50),
+    )
+    st.plotly_chart(fig_cost2, use_container_width=True)
+
+    coverage_df = pd.DataFrame({
+        "Approach": ["Full Core + RCAL", "Partial Core + Cuttings Petro",
+                     "Cuttings Petro + pXRF/XRD", "Cuttings Petro + pXRF + μCT"],
+        "Reservoir Section Coverage": ["10–15%", "30–40%", "85–95%", "85–95%"],
+        "Diagenetic Insight": ["Excellent", "Good", "Good", "Very Good"],
+        "Operator Bias Risk": ["Moderate", "Moderate", "Low (geochem objective)", "Low"],
+        "Total Cost ($K)": [238, 120, 40, 62],
+    })
+    st.dataframe(coverage_df, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.info(
+        "**Key Takeaway:** The cuttings + geochemistry approach provides 85–95% well section "
+        "coverage at 17–26% of the cost of conventional full-core programmes, while reducing "
+        "operator bias through objective geochemical measurements. When combined with ML "
+        "models calibrated on nearby core data, this approach delivers porosity and permeability "
+        "predictions across entire drilled sections — not just the thin cored intervals."
+    )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGE 7 — Business Case
 # ═══════════════════════════════════════════════════════════════════════════════
 elif page == "Business Case":
     st.markdown("""
